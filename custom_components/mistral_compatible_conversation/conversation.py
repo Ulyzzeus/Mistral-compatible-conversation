@@ -1,33 +1,44 @@
 """Conversation support for OpenAI Compatible APIs."""
 
-from collections.abc import AsyncGenerator, Callable
+from __future__ import annotations
+
 import json
-from typing import Any, Literal, cast
+from collections.abc import AsyncGenerator, Callable
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import openai
-from openai import AsyncStream
+from openai._streaming import AsyncStream
 from openai._types import NOT_GIVEN
-from openai.types.chat import (
-    ChatCompletionAssistantMessageParam,
-    ChatCompletionChunk,
-    ChatCompletionMessageParam,
-    ChatCompletionMessageToolCallParam,
-    ChatCompletionToolMessageParam,
-    ChatCompletionToolParam,
+from openai.types.responses import (
+    EasyInputMessageParam,
+    FunctionToolParam,
+    ResponseCodeInterpreterToolCall,
+    ResponseCompletedEvent,
+    ResponseErrorEvent,
+    ResponseFailedEvent,
+    ResponseFunctionCallArgumentsDeltaEvent,
+    ResponseFunctionCallArgumentsDoneEvent,
+    ResponseFunctionToolCall,
+    ResponseIncompleteEvent,
+    ResponseInputParam,
+    ResponseOutputItemAddedEvent,
+    ResponseOutputItemDoneEvent,
+    ResponseOutputMessage,
+    ResponseReasoningItem,
+    ResponseReasoningSummaryTextDeltaEvent,
+    ResponseStreamEvent,
+    ResponseTextDeltaEvent,
 )
-from openai.types.chat.chat_completion_message_function_tool_call_param import (
-    ChatCompletionMessageFunctionToolCallParam,
-    Function,
-)
-from openai.types.shared_params import FunctionDefinition
+from openai.types.responses.response_create_params import ResponseCreateParamsStreaming
+from openai.types.responses.response_input_param import FunctionCallOutput
 from voluptuous_openapi import convert
 
 from homeassistant.components import conversation
-from homeassistant.config_entries import ConfigEntry, ConfigSubentry
+from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import CONF_LLM_HASS_API, MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import device_registry as dr, intent, llm
+from homeassistant.helpers import device_registry as dr, llm
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import OpenAICompatibleConfigEntry
@@ -46,6 +57,9 @@ from .const import (
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
+
+if TYPE_CHECKING:
+    from . import OpenAICompatibleConfigEntry
 
 # Max number of back and forth with the LLM to generate a response
 MAX_TOOL_ITERATIONS = 10
@@ -66,113 +80,115 @@ async def async_setup_entry(
 
 def _format_tool(
     tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None
-) -> ChatCompletionToolParam:
+) -> FunctionToolParam:
     """Format tool specification."""
-    tool_spec = FunctionDefinition(
+    return FunctionToolParam(
+        type="function",
         name=tool.name,
         parameters=convert(tool.parameters, custom_serializer=custom_serializer),
+        description=tool.description,
+        strict=False,
     )
-    if tool.description:
-        tool_spec["description"] = tool.description
-    return ChatCompletionToolParam(type="function", function=tool_spec)
 
 
 def _convert_content_to_param(
-    content: conversation.Content,
-) -> ChatCompletionMessageParam:
-    """Convert any native chat message for this agent to the native format."""
-    if content.role == "tool_result":
-        assert isinstance(content, conversation.ToolResultContent)
-        return ChatCompletionToolMessageParam(
-            role="tool",
-            tool_call_id=content.tool_call_id,
-            content=json.dumps(content.tool_result),
-        )
+    chat_content: list[conversation.Content],
+) -> ResponseInputParam:
+    """Convert HA chat messages to the OpenAI v2 native format."""
+    messages: ResponseInputParam = []
 
-    if content.role in ("user", "system"):
-        return cast(
-            ChatCompletionMessageParam,
-            {"role": content.role, "content": content.content},
-        )
+    for content in chat_content:
+        if isinstance(content, conversation.ToolResultContent):
+            messages.append(
+                FunctionCallOutput(
+                    type="function_call_output",
+                    call_id=content.tool_call_id,
+                    output=json.dumps(content.tool_result),
+                )
+            )
+            continue
 
-    if content.role == "assistant":
-        assert isinstance(content, conversation.AssistantContent)
-        if content.tool_calls:
-            return ChatCompletionAssistantMessageParam(
-                role="assistant",
-                content=content.content or "",
-                tool_calls=[
-                    ChatCompletionMessageFunctionToolCallParam(
-                        id=tool_call.id,
-                        function=Function(
-                            arguments=json.dumps(tool_call.tool_args),
-                            name=tool_call.tool_name,
-                        ),
-                        type="function",
+        if content.content:
+            role: Literal["user", "assistant", "system"] = content.role  # type: ignore[assignment]
+            # v2 API uses 'system' role, not 'developer'
+            if role == "system":
+                messages.append(
+                    EasyInputMessageParam(
+                        type="message", role="system", content=content.content
                     )
-                    for tool_call in content.tool_calls
-                ],
-            )
-        else:
-            final_content = content.content
-            if not final_content:
-                final_content = " "
-            return ChatCompletionAssistantMessageParam(
-                role="assistant",
-                content=final_content,
-            )
+                )
+            elif role == "user":
+                messages.append(
+                    EasyInputMessageParam(
+                        type="message", role="user", content=content.content
+                    )
+                )
+            elif role == "assistant":
+                messages.append(
+                    EasyInputMessageParam(
+                        type="message", role="assistant", content=content.content
+                    )
+                )
 
-    LOGGER.warning("Unhandled content type during conversion: %s", type(content))
-    return cast(
-        ChatCompletionMessageParam,
-        {"role": content.role, "content": content.content},
-    )
+        if isinstance(content, conversation.AssistantContent):
+            if content.tool_calls:
+                for tool_call in content.tool_calls:
+                    messages.append(
+                        ResponseFunctionToolCall(
+                            type="function_call",
+                            name=tool_call.tool_name,
+                            arguments=json.dumps(tool_call.tool_args),
+                            call_id=tool_call.id,
+                        )
+                    )
+    return messages
+
 
 async def _openai_to_ha_stream(
-    stream: AsyncStream[ChatCompletionChunk],
+    chat_log: conversation.ChatLog,
+    stream: AsyncStream[ResponseStreamEvent],
     strip_think_tags: bool,
-) -> AsyncGenerator[conversation.AssistantContentDeltaDict, None]:
-    """Transform the OpenAI stream into the Home Assistant delta format."""
-    first_chunk = True
-    active_tool_calls_by_index: dict[int, dict[str, Any]] = {}
-
+) -> AsyncGenerator[
+    conversation.AssistantContentDeltaDict | conversation.ToolResultContentDeltaDict,
+    None,
+]:
+    """Transform an OpenAI v2 delta stream into HA format."""
+    last_role: Literal["assistant", "tool_result"] | None = None
+    
     buffer = ""
     is_in_think_block = False
     start_tag = "<think>"
     end_tag = "</think>"
+    
+    active_tool_calls_by_index: dict[int, dict[str, Any]] = {}
+    current_tool_call: ResponseFunctionToolCall | None = None
 
-    async for chunk in stream:
-        if not chunk.choices:
-            continue
+    async for event in stream:
+        LOGGER.debug("Received event: %s", event)
 
-        delta = chunk.choices[0].delta
-        LOGGER.debug("Received stream delta: %s", delta)
+        if isinstance(event, ResponseOutputItemAddedEvent):
+            if isinstance(event.item, ResponseFunctionToolCall):
+                if last_role != "assistant":
+                    yield {"role": "assistant"}
+                    last_role = "assistant"
+                current_tool_call = event.item
+            elif (
+                isinstance(event.item, ResponseOutputMessage)
+                or last_role != "assistant"
+            ):
+                yield {"role": "assistant"}
+                last_role = "assistant"
 
-        if first_chunk and delta.role:
-            yield {"role": delta.role}
-            first_chunk = False
-
-        # Fix: Add support for Mistral's 'magistral' structured streaming (TypeError)
-        if delta.content:
-            content_text = ""
-            # Handle both structured (list) and simple (str) content types
-            if isinstance(delta.content, list):
-                # This is a structured response from a reasoning model like Magistral
-                for part in delta.content:
-                    # We only care about the final answer, not the 'thinking' parts
-                    if hasattr(part, "type") and part.type == 'text' and hasattr(part, "text"):
-                        content_text += part.text
-            elif isinstance(delta.content, str):
-                # This is a standard text response
-                content_text = delta.content
-            
+        elif isinstance(event, ResponseTextDeltaEvent):
+            content_text = event.delta
             if not content_text:
                 continue
-
+            
             if not strip_think_tags:
                 yield {"content": content_text}
                 continue
 
+            # Start of buffer logic for think tags
             buffer += content_text
             while True:
                 if is_in_think_block:
@@ -188,7 +204,6 @@ async def _openai_to_ha_stream(
                         content_to_yield = buffer[:start_tag_pos]
                         if content_to_yield:
                             yield {"content": content_to_yield}
-
                         is_in_think_block = True
                         buffer = buffer[start_tag_pos + len(start_tag) :]
                         continue
@@ -197,47 +212,75 @@ async def _openai_to_ha_stream(
                         safe_yield_len = len(buffer) - len(start_tag)
                         yield {"content": buffer[:safe_yield_len]}
                         buffer = buffer[safe_yield_len:]
-
                     break
+            # End of buffer logic
 
-        if delta.tool_calls:
-            for tc_delta in delta.tool_calls:
-                if tc_delta.index is None:
-                    continue
-                current_tc_data = active_tool_calls_by_index.setdefault(
-                    tc_delta.index, {"id": None, "name": None, "args_str": ""}
-                )
-                if tc_delta.id:
-                    current_tc_data["id"] = tc_delta.id
-                if tc_delta.function:
-                    if tc_delta.function.name:
-                        current_tc_data["name"] = tc_delta.function.name
-                    if tc_delta.function.arguments:
-                        current_tc_data["args_str"] += tc_delta.function.arguments
+        elif isinstance(event, ResponseFunctionCallArgumentsDeltaEvent):
+            if current_tool_call:
+                current_tool_call.arguments += event.delta
 
-        choice_finish_reason = chunk.choices[0].finish_reason
-        if choice_finish_reason and active_tool_calls_by_index:
-            final_tool_inputs = []
-            for index, tc_data in sorted(active_tool_calls_by_index.items()):
-                tool_id = tc_data.get("id", f"call_{index}")
-                tool_name = tc_data.get("name")
-                args_str = tc_data.get("args_str", "{}")
-                if not tool_name:
-                    continue
+        elif isinstance(event, ResponseFunctionCallArgumentsDoneEvent):
+            if current_tool_call:
+                current_tool_call.status = "completed"
                 try:
-                    parsed_args = json.loads(args_str if args_str else "{}")
-                    final_tool_inputs.append(
-                        llm.ToolInput(
-                            id=tool_id, tool_name=tool_name, tool_args=parsed_args
-                        )
-                    )
+                    parsed_args = json.loads(current_tool_call.arguments or "{}")
+                    yield {
+                        "tool_calls": [
+                            llm.ToolInput(
+                                id=current_tool_call.call_id,
+                                tool_name=current_tool_call.name,
+                                tool_args=parsed_args,
+                            )
+                        ]
+                    }
                 except json.JSONDecodeError:
                     LOGGER.error(
-                        "Failed to decode JSON for tool %s: %s", tool_name, args_str
+                        "Failed to decode JSON for tool %s: %s",
+                        current_tool_call.name,
+                        current_tool_call.arguments,
                     )
-            if final_tool_inputs:
-                yield {"tool_calls": final_tool_inputs}
-            active_tool_calls_by_index.clear()
+                current_tool_call = None
+
+        elif isinstance(event, ResponseCompletedEvent):
+            if event.response.usage is not None:
+                chat_log.async_trace(
+                    {
+                        "stats": {
+                            "input_tokens": event.response.usage.input_tokens,
+                            "output_tokens": event.response.usage.output_tokens,
+                        }
+                    }
+                )
+        elif isinstance(event, (ResponseIncompleteEvent, ResponseFailedEvent)):
+            if event.response.usage is not None:
+                chat_log.async_trace(
+                    {
+                        "stats": {
+                            "input_tokens": event.response.usage.input_tokens,
+                            "output_tokens": event.response.usage.output_tokens,
+                        }
+                    }
+                )
+            reason = "unknown reason"
+            if isinstance(event, ResponseIncompleteEvent):
+                if (
+                    event.response.incomplete_details
+                    and event.response.incomplete_details.reason
+                ):
+                    reason = event.response.incomplete_details.reason
+                if reason == "max_output_tokens":
+                    reason = "max output tokens reached"
+                elif reason == "content_filter":
+                    reason = "content filter triggered"
+                raise HomeAssistantError(f"OpenAI response incomplete: {reason}")
+            
+            if isinstance(event, ResponseFailedEvent):
+                if event.response.error is not None:
+                    reason = event.response.error.message
+                raise HomeAssistantError(f"OpenAI response failed: {reason}")
+
+        elif isinstance(event, ResponseErrorEvent):
+            raise HomeAssistantError(f"OpenAI response error: {event.message}")
 
     if strip_think_tags and not is_in_think_block and buffer:
         yield {"content": buffer}
@@ -246,7 +289,7 @@ async def _openai_to_ha_stream(
 class OpenAICompatibleConversationEntity(
     conversation.ConversationEntity, conversation.AbstractConversationAgent
 ):
-    """Mistral Compatible conversation agent."""
+    """Mistral Compatible conversation agent (OpenAI v2 API)."""
 
     _attr_has_entity_name = True
     _attr_name = None
@@ -268,7 +311,7 @@ class OpenAICompatibleConversationEntity(
             identifiers={(DOMAIN, subentry.subentry_id)},
             name=subentry.title,
             manufacturer="OpenAI Compatible",
-            model="OpenAI Compatible",
+            model=subentry.data.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL),
             entry_type=dr.DeviceEntryType.SERVICE,
         )
         if self.options.get(CONF_LLM_HASS_API):
@@ -312,7 +355,7 @@ class OpenAICompatibleConversationEntity(
         except conversation.ConverseError as err:
             return err.as_conversation_result()
 
-        tools: list[ChatCompletionToolParam] | None = None
+        tools: list[FunctionToolParam] | None = None
         if chat_log.llm_api:
             tools = [
                 _format_tool(tool, chat_log.llm_api.custom_serializer)
@@ -321,9 +364,7 @@ class OpenAICompatibleConversationEntity(
 
         for _iteration in range(MAX_TOOL_ITERATIONS):
             try:
-                messages = [
-                    _convert_content_to_param(content) for content in chat_log.content
-                ]
+                messages = _convert_content_to_param(chat_log.content)
             except Exception as err:
                 LOGGER.error("Error during history regeneration: %s", err)
                 raise HomeAssistantError(f"Failed to process history: {err}") from err
@@ -336,30 +377,37 @@ class OpenAICompatibleConversationEntity(
                     if not current_content.endswith("/no_think"):
                         user_message["content"] = current_content + "/no_think"
 
-            base_url = str(getattr(client, "base_url", ""))
-            is_mistral = "mistral.ai" in base_url.lower()
-
-            model_args: dict[str, Any] = {
-                "model": options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL),
-                "messages": messages,
-                "tools": tools or NOT_GIVEN,
-                "tool_choice": "auto" if tools else NOT_GIVEN,
-                "max_tokens": options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
-                "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
-                "temperature": options.get(
+            model_args = ResponseCreateParamsStreaming(
+                model=options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL),
+                input=messages,
+                tools=tools or NOT_GIVEN,
+                tool_choice="auto" if tools else NOT_GGIVEN,
+                max_output_tokens=options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
+                top_p=options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
+                temperature=options.get(
                     CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE
                 ),
-                "stream": True,
-            }
-            if not is_mistral:
-                model_args["user"] = chat_log.conversation_id
+                stream=True,
+                store=False, # v2 API uses 'store'
+                user=chat_log.conversation_id, # v2 API uses 'user'
+            )
+            
+            # Remove params that might not be supported by all compatible APIs
+            base_url = str(getattr(client, "base_url", ""))
+            is_mistral = "mistral.ai" in base_url.lower()
+            if is_mistral:
+                model_args.pop("user", None)
+            
+            # Add v2 reasoning for compatible models (if any)
+            # For now, we'll stick to the core API
 
             try:
-                response_stream = await client.chat.completions.create(**model_args)
+                response_stream = await client.responses.create(**model_args)
                 strip_tags = options.get(CONF_STRIP_THINK_TAGS, False)
+                
                 async for _ in chat_log.async_add_delta_content_stream(
                     user_input.agent_id,
-                    _openai_to_ha_stream(response_stream, strip_think_tags=strip_tags),
+                    _openai_to_ha_stream(chat_log, response_stream, strip_think_tags=strip_tags),
                 ):
                     pass
 
@@ -380,3 +428,4 @@ class OpenAICompatibleConversationEntity(
                 break
 
         return conversation.async_get_result_from_chat_log(user_input, chat_log)
+

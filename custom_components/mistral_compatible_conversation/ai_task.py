@@ -1,12 +1,18 @@
-"""AI Task integration for OpenAI Compatible APIs."""
+"""AI Task integration for OpenAI Compatible APIs (v2 API)."""
 
 from __future__ import annotations
 
+import base64
 import json
+from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any
 
 import openai
-from openai._types import NOT_GIVEN
+from openai.types.responses import (
+    EasyInputMessageParam,
+    ImageGenerationCall,
+    ResponseInputParam,
+)
 
 from homeassistant.components import ai_task, conversation
 from homeassistant.config_entries import ConfigEntry
@@ -54,7 +60,7 @@ async def async_setup_entry(
 class OpenAICompatibleAITaskEntity(
     ai_task.AITaskEntity,
 ):
-    """OpenAI Compatible AI Task entity."""
+    """OpenAI Compatible AI Task entity (v2 API)."""
 
     _attr_has_entity_name = True
     _attr_name = None
@@ -79,6 +85,7 @@ class OpenAICompatibleAITaskEntity(
             ai_task.AITaskEntityFeature.GENERATE_DATA
             | ai_task.AITaskEntityFeature.GENERATE_IMAGE
             # Add SUPPORT_ATTACHMENTS if your model/API can handle images
+            # | ai_task.AITaskEntityFeature.SUPPORT_ATTACHMENTS
         )
 
     async def _async_generate_data(
@@ -88,52 +95,60 @@ class OpenAICompatibleAITaskEntity(
     ) -> ai_task.GenDataTaskResult:
         """Handle a generate data task."""
         
-        # This implementation is based on your conversation.py logic
-        # It does not support streaming, as ai_task does not support it.
+        # Get system prompt from chat log
+        system_prompt = "You are a helpful assistant."
+        if chat_log.content and chat_log.content[0].role == "system":
+            system_prompt = chat_log.content[0].content
         
-        messages = [
-            {"role": "system", "content": "You are a helpful assistant."}, # This was the line with the SyntaxError
-            {"role": "user", "content": task.instructions}
+        messages: ResponseInputParam = [
+            EasyInputMessageParam(
+                type="message", role="system", content=system_prompt
+            ),
+            EasyInputMessageParam(
+                type="message", role="user", content=task.instructions
+            ),
         ]
         
-        # Add system prompt from chat_log if it exists (it's the first message)
-        if chat_log.content and chat_log.content[0].role == "system":
-            messages[0]["content"] = chat_log.content[0].content
-            messages[1]["content"] = task.instructions
-        else:
-             messages.insert(0, {"role": "system", "content": "You are a helpful assistant."})
-             messages.append({"role": "user", "content": task.instructions})
-
-
         # Note: attachments are not handled in this basic example
-        # You would need to add logic similar to Google/OpenAI to handle task.attachments
+        # You would need to add logic similar to OpenAI's official integration
+        # to handle task.attachments and convert them to v2 API format.
 
         model_args: dict[str, Any] = {
             "model": self.options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL),
-            "messages": messages,
-            "max_tokens": self.options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
+            "input": messages,
+            "max_output_tokens": self.options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
             "top_p": self.options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
             "temperature": self.options.get(
                 CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE
             ),
             "stream": False, # ai_task does not support streaming
+            "store": False,
+            "user": chat_log.conversation_id,
         }
+        
+        # Remove params that might not be supported
+        base_url = str(getattr(self.client, "base_url", ""))
+        is_mistral = "mistral.ai" in base_url.lower()
+        if is_mistral:
+            model_args.pop("user", None)
 
         # Handle structured data if requested
         if task.structure:
-            model_args["response_format"] = {"type": "json_object"}
-            # You might need to adjust the prompt to instruct the model to use the JSON format
-            messages.append(
-                {
-                    "role": "user",
-                    "content": f"Please provide the output in a JSON format matching this schema: {json.dumps(task.structure.schema)}",
-                }
+            # v2 API uses text.format.type = "json_schema"
+            # This is complex to add without knowing if the compatible API supports it.
+            # We'll use the simpler "instruct the model" approach.
+            model_args["input"].append(
+                EasyInputMessageParam(
+                    type="message",
+                    role="user",
+                    content=f"Please provide the output in a JSON format matching this schema: {json.dumps(task.structure.schema)}",
+                )
             )
 
         try:
-            response = await self.client.chat.completions.create(**model_args)
+            response = await self.client.responses.create(**model_args)
             
-            response_text = response.choices[0].message.content or ""
+            response_text = response.output_text or ""
 
         except openai.RateLimitError as err:
             LOGGER.error("Rate limited by API: %s", err)
@@ -152,7 +167,7 @@ class OpenAICompatibleAITaskEntity(
         if task.structure:
             try:
                 data_response = json_loads(response_text)
-            except json.JSONDecodeError as err:
+            except JSONDecodeError as err:
                 LOGGER.error(
                     "Failed to parse JSON response: %s. Response: %s",
                     err,
@@ -176,31 +191,68 @@ class OpenAICompatibleAITaskEntity(
     ) -> ai_task.GenImageTaskResult:
         """Handle a generate image task."""
         
-        # This uses the same logic as your `generate_image` service
+        # This implementation is based on the official OpenAI integration
+        # It assumes the v2 API structure for image generation
+        
+        messages: ResponseInputParam = [
+            EasyInputMessageParam(
+                type="message", role="user", content=task.instructions
+            ),
+        ]
+        
+        model_args: dict[str, Any] = {
+            "model": self.options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL),
+            "input": messages,
+            "tool_choice": {"type": "image_generation"},
+            "stream": False,
+            "store": True, # Store=True is needed to get image results
+            "user": chat_log.conversation_id,
+        }
+        
+        # Remove params that might not be supported
+        base_url = str(getattr(self.client, "base_url", ""))
+        is_mistral = "mistral.ai" in base_url.lower()
+        if is_mistral:
+            model_args.pop("user", None)
+
         try:
-            response = await self.client.images.generate(
-                model="dall-e-3", # You may want to make this configurable
-                prompt=task.instructions,
-                response_format="b64_json", # Request base64 data
-                n=1,
+            response = await self.client.responses.create(**model_args)
+            
+            image_call: ImageGenerationCall | None = None
+            if response.output:
+                for item in response.output:
+                    if isinstance(item, ImageGenerationCall):
+                        image_call = item
+                        break
+            
+            if image_call is None or image_call.result is None:
+                raise HomeAssistantError("No image returned from API")
+
+            image_data = base64.b64decode(image_call.result)
+            image_call.result = None # Clear data to save memory
+
+            if hasattr(image_call, "output_format") and (
+                output_format := image_call.output_format
+            ):
+                mime_type = f"image/{output_format}"
+            else:
+                mime_type = "image/png"
+
+            return ai_task.GenImageTaskResult(
+                image_data=image_data,
+                conversation_id=chat_log.conversation_id,
+                mime_type=mime_type,
+                model=image_call.model,
+                revised_prompt=image_call.revised_prompt,
             )
+
+        except openai.RateLimitError as err:
+            LOGGER.error("Rate limited by API: %s", err)
+            raise HomeAssistantError("Rate limited or insufficient funds") from err
         except openai.OpenAIError as err:
+            LOGGER.error("Error generating image: %s", err)
             raise HomeAssistantError(f"Error generating image: {err}") from err
-
-        if (
-            not response.data
-            or not response.data[0].b64_json
-        ):
-            raise HomeAssistantError("No image data returned from API")
-
-        image_data = await self.hass.async_add_executor_job(
-            base64.b64decode, response.data[0].b64_json
-        )
-
-        return ai_task.GenImageTaskResult(
-            image_data=image_data,
-            conversation_id=chat_log.conversation_id,
-            mime_type="image/png", # DALL-E returns PNG
-            revised_prompt=response.data[0].revised_prompt,
-        )
+        except Exception as err:
+            LOGGER.error("Unexpected error generating image: %s", err)
+            raise HomeAssistantError(f"An unexpected error occurred: {err}") from err
 
