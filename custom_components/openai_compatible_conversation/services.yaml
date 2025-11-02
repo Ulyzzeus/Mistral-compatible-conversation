@@ -4,7 +4,7 @@ generate_image:
       required: true
       selector:
         config_entry:
-          integration: openai_compatible_conversation
+          integration: mistral_compatible_conversation
     prompt:
       required: true
       selector:
@@ -45,7 +45,7 @@ mistral_vision:
       required: true
       selector:
         config_entry:
-          integration: openai_compatible_conversation
+          integration: mistral_compatible_conversation
     prompt:
       required: true
       selector:
@@ -72,7 +72,7 @@ web_search:
       required: true
       selector:
         config_entry:
-          integration: openai_compatible_conversation
+          integration: mistral_compatible_conversation
     prompt:
       required: true
       example: "What are the main news headlines today?"

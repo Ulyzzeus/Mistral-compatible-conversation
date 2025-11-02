@@ -1,4 +1,4 @@
-"""Config flow for OpenAI Compatible Conversation integration."""
+"""Config flow for Mistral Compatible Conversation integration."""
 
 from __future__ import annotations
 
@@ -44,6 +44,8 @@ from .const import (
     RECOMMENDED_MAX_TOKENS,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
+    DEFAULT_AI_TASK_NAME, 
+    RECOMMENDED_AI_TASK_OPTIONS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -124,7 +126,7 @@ def agent_schema(
 
 
 class OpenAICompatibleConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for OpenAI Compatible Conversation."""
+    """Handle a config flow for Mistral Compatible Conversation."""
 
     VERSION = 2
 
@@ -172,7 +174,7 @@ class OpenAICompatibleConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class ConversationFlowHandler(ConfigSubentryFlow):
-    """Handle a conversation subentry flow for OpenAI Compatible."""
+    """Handle a conversation subentry flow for Mistral Compatible."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None

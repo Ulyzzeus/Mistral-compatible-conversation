@@ -246,7 +246,7 @@ async def _openai_to_ha_stream(
 class OpenAICompatibleConversationEntity(
     conversation.ConversationEntity, conversation.AbstractConversationAgent
 ):
-    """OpenAI Compatible conversation agent."""
+    """Mistral Compatible conversation agent."""
 
     _attr_has_entity_name = True
     _attr_name = None

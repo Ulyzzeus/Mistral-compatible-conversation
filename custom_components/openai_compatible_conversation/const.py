@@ -1,12 +1,12 @@
-"""Constants for the OpenAI Compatible Conversation integration."""
+"""Constants for the Mistral Compatible Conversation integration."""
 
 import logging
 
-DOMAIN = "openai_compatible_conversation"
+DOMAIN = "mistral_compatible_conversation"
 LOGGER = logging.getLogger(__package__)
 
 CONF_NAME = "name"
-DEFAULT_AGENT_NAME = "OAI Compatible Agent"
+DEFAULT_AGENT_NAME = "MISTRAL Compatible Agent"
 
 CONF_RECOMMENDED = "recommended"
 CONF_PROMPT = "prompt"

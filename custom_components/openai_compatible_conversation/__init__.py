@@ -1,4 +1,4 @@
-"""The OpenAI Compatible Conversation integration."""
+"""The Mistral Compatible Conversation integration."""
 
 from __future__ import annotations
 
@@ -164,7 +164,7 @@ async def web_search(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up OpenAI Compatible Conversation."""
+    """Set up Mistral Compatible Conversation."""
 
     async def render_image(call: ServiceCall) -> ServiceResponse:
         """Render an image with dall-e."""
@@ -326,7 +326,7 @@ async def async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: OpenAICompatibleConfigEntry) -> bool:
-    """Set up OpenAI Compatible Conversation from a config entry."""
+    """Set up Mistral Compatible Conversation from a config entry."""
     client = openai.AsyncOpenAI(
         api_key=entry.data[CONF_API_KEY],
         http_client=get_async_client(hass),
