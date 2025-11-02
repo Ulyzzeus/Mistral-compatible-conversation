@@ -89,7 +89,11 @@ def agent_schema(
         {
             vol.Optional(
                 CONF_PROMPT,
-                description={"suggested_value": data.get(CONF_PROMPT, llm.DEFAULT_INSTRUCTIONS_PROMPT)},
+                description={
+                    "suggested_value": data.get(
+                        CONF_PROMPT, llm.DEFAULT_INSTRUCTIONS_PROMPT
+                    )
+                },
             ): TemplateSelector(),
             vol.Optional(
                 CONF_LLM_HASS_API,
@@ -123,6 +127,7 @@ def agent_schema(
         }
     )
     return vol.Schema(schema_dict)
+
 
 def ai_task_schema(
     hass: HomeAssistant, is_new: bool, data: dict[str, Any] | None = None
@@ -233,7 +238,7 @@ class ConversationFlowHandler(ConfigSubentryFlow):
             if is_new:
                 title = updated_data.pop(CONF_NAME)
                 return self.async_create_entry(title=title, data=updated_data)
-            
+
             # Если это реконфигурация, обновляем существующую запись
             return self.async_update_and_abort(
                 self._get_entry(),
@@ -275,7 +280,9 @@ class ConversationFlowHandler(ConfigSubentryFlow):
                 data=updated_data,
             )
 
-       return self.async_show_form(
+        # This was the line with the indentation error.
+        # I've aligned it correctly with the `if user_input is not None:` block.
+        return self.async_show_form(
             step_id="ai_task_init",
             data_schema=self.add_suggested_values_to_schema(
                 ai_task_schema(self.hass, is_new=is_new, data=current_data),
@@ -285,3 +292,4 @@ class ConversationFlowHandler(ConfigSubentryFlow):
 
     async_step_user = async_step_init
     async_step_reconfigure = async_step_init
+
