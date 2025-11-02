@@ -1,6 +1,7 @@
 """Constants for the Mistral Compatible Conversation integration."""
 
 import logging
+from types import MappingProxyType
 
 DOMAIN = "mistral_compatible_conversation"
 LOGGER = logging.getLogger(__package__)
