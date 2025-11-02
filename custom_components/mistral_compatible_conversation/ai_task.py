@@ -8,11 +8,8 @@ from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any
 
 import openai
-from openai.types.responses import (
-    EasyInputMessageParam,
-    ImageGenerationCall,
-    ResponseInputParam,
-)
+from openai.types.responses import EasyInputMessageParam, ResponseInputParam
+from openai.types.responses.response_output_item import ImageGenerationCall
 
 from homeassistant.components import ai_task, conversation
 from homeassistant.config_entries import ConfigEntry
