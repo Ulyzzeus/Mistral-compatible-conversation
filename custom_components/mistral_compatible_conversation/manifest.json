@@ -8,6 +8,6 @@
   "documentation": "https://github.com/Ulyzzeus/Mistral-compatible-conversation/blob/main/README.md",
   "integration_type": "service",
   "iot_class": "cloud_polling",
-  "requirements": ["openai>=1.99.0"],
+  "requirements": ["openai>=2.0.0"],
   "version": "0.0.8"
 }
