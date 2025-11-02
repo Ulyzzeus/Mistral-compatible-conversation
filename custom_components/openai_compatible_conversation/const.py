@@ -22,3 +22,9 @@ CONF_BASE_URL = "base_url"
 RECOMMENDED_BASE_URL = "https://api.mistral.ai/v1/"
 CONF_NO_THINK = "no_think"
 CONF_STRIP_THINK_TAGS = "strip_think_tags"
+DEFAULT_AI_TASK_NAME = "Mistral AI Task"
+RECOMMENDED_AI_TASK_OPTIONS = MappingProxyType(
+    {
+        "recommended": True,
+    }
+)

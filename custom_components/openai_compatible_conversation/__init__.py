@@ -40,7 +40,7 @@ SERVICE_GENERATE_IMAGE = "generate_image"
 SERVICE_MISTRAL_VISION = "mistral_vision"
 SERVICE_WEB_SEARCH = "web_search"
 
-PLATFORMS = (Platform.CONVERSATION,)
+PLATFORMS = (Platform.CONVERSATION, Platform.AI_TASK)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 type OpenAICompatibleConfigEntry = ConfigEntry[openai.AsyncClient]

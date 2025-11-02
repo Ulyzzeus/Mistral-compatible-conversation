@@ -44,7 +44,7 @@ from .const import (
     RECOMMENDED_MAX_TOKENS,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
-    DEFAULT_AI_TASK_NAME, 
+    DEFAULT_AI_TASK_NAME,
     RECOMMENDED_AI_TASK_OPTIONS,
 )
 
@@ -73,7 +73,7 @@ def agent_schema(
         data = {}
 
     schema_dict = {}
-    
+
     if is_new:
         schema_dict[vol.Required(CONF_NAME, default=DEFAULT_AGENT_NAME)] = str
 
@@ -124,6 +124,30 @@ def agent_schema(
     )
     return vol.Schema(schema_dict)
 
+def ai_task_schema(
+    hass: HomeAssistant, is_new: bool, data: dict[str, Any] | None = None
+) -> vol.Schema:
+    """Return a schema for the AI task configuration."""
+    if data is None:
+        data = {}
+
+    schema_dict = {}
+
+    if is_new:
+        schema_dict[vol.Required(CONF_NAME, default=DEFAULT_AI_TASK_NAME)] = str
+
+    schema_dict.update(
+        {
+            vol.Optional(
+                CONF_CHAT_MODEL,
+                description={"suggested_value": data.get(CONF_CHAT_MODEL)},
+                default=RECOMMENDED_CHAT_MODEL,
+            ): str,
+            # Add any other AI task-specific options here
+        }
+    )
+    return vol.Schema(schema_dict)
+
 
 class OpenAICompatibleConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Mistral Compatible Conversation."""
@@ -138,6 +162,7 @@ class OpenAICompatibleConfigFlow(ConfigFlow, domain=DOMAIN):
         """Return subentries supported by this handler."""
         return {
             "conversation": ConversationFlowHandler,
+            "ai_task_data": ConversationFlowHandler,
         }
 
     async def async_step_user(
@@ -162,7 +187,18 @@ class OpenAICompatibleConfigFlow(ConfigFlow, domain=DOMAIN):
             errors["base"] = "unknown"
         else:
             title = user_input.pop("name")
-            return self.async_create_entry(title=title, data=user_input)
+            return self.async_create_entry(
+                title=title,
+                data=user_input,
+                subentries=[
+                    {
+                        "subentry_type": "ai_task_data",
+                        "data": RECOMMENDED_AI_TASK_OPTIONS,
+                        "title": DEFAULT_AI_TASK_NAME,
+                        "unique_id": None,
+                    },
+                ],
+            )
 
         return self.async_show_form(
             step_id="user",
@@ -180,6 +216,8 @@ class ConversationFlowHandler(ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Handle the initial step for creating or editing an agent."""
+        if self._subentry_type == "ai_task_data":
+            return await self.async_step_ai_task_init(user_input)
 
         is_new = self.source != "reconfigure"
         current_data = {}
@@ -207,6 +245,41 @@ class ConversationFlowHandler(ConfigSubentryFlow):
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
                 agent_schema(self.hass, is_new=is_new), current_data
+            ),
+        )
+
+    async def async_step_ai_task_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Handle the AI Task subentry."""
+        is_new = self.source != "reconfigure"
+        current_data = {}
+        if not is_new:
+            current_data = self._get_reconfigure_subentry().data.copy()
+        else:
+            current_data = RECOMMENDED_AI_TASK_OPTIONS.copy()
+
+        if user_input is not None:
+            updated_data = {**current_data, **user_input}
+            updated_data.pop(
+                "recommended", None
+            )  # Remove temp flag if it exists
+
+            if is_new:
+                title = updated_data.pop(CONF_NAME)
+                return self.async_create_entry(title=title, data=updated_data)
+
+            return self.async_update_and_abort(
+                self._get_entry(),
+                self._get_reconfigure_subentry(),
+                data=updated_data,
+            )
+
+       return self.async_show_form(
+            step_id="ai_task_init",
+            data_schema=self.add_suggested_values_to_schema(
+                ai_task_schema(self.hass, is_new=is_new, data=current_data),
+                current_data,
             ),
         )
 
